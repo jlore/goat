@@ -9,12 +9,16 @@
 
 # ignore build
 builds/*
+build-cmake/*
 
 # ignore input
 inputfiles/*
 
 # ignore compiler files
 *.o
+
+# ignore editor backup files
+*~
 
 # ignore pycache folders
 scripts/__pycache__/*

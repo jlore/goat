@@ -16,7 +16,9 @@
 ## COMPDIRVARS:        define variables for compiler directives
 COMPDIRVARS = 
 ifdef SOLPSTOP
-COMPDIRVARS += -DSOLPS
+    ifndef GOAT_DISABLE_SOLPS
+        COMPDIRVARS += -DSOLPS
+    endif
 endif
 
 ## % Library paths
@@ -74,7 +76,9 @@ endif
 
 ## SOLPSTOP            : path to SOLPS (overridden if SOLPSTOP is define)
 ifdef SOLPSTOP
-DOSOLPS = true
+    ifndef GOAT_DISABLE_SOLPS
+        DOSOLPS = true
+    endif
 endif
 ifdef HOST_NAME
 else

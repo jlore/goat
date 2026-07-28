@@ -1,0 +1,3 @@
+setenv OMP_NUM_THREADS 4
+setenv OMP_DISPLAY_ENV false
+setenv GOAT_DISABLE_SOLPS true
