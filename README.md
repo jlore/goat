@@ -11,6 +11,7 @@ Toolbox to generate (2D) magnetic field aligned grids for plasma edge simulation
 ## Installation
 To install goat, you need a Unix-like environment and the tcsh shell. Additionally, you need to have at least the following libraries and packages installed:
 - Make 
+- CMake 3.18 or newer (optional, for the CMake build)
 - A fortran compiler that can cope with the F2008/F2018 standard (gfortran version 13.3.0 is currently being used by the developers)
 - A C compiler (gcc version 13.3.0 is currently being used by the developers)
 - SuiteSparse (see https://github.com/DrTimothyAldenDavis/SuiteSparse)
@@ -27,7 +28,9 @@ Having these dependencies installed, the code is installed as follows:
 - open a clean tcsh terminal
 - clone the git repository
 - `cd` into the top folder after cloning and execute `source setup.csh`. This will load in the necessary environment variables for compilation.
-- To compile goat, execute `make goat` (or `make goat_debug`) to compile the executable name `goat.exe` and `goat_debug.exe`. After compilation, these should be found in the executables again.
+- To compile with the original Make build, execute `make goat` (or `make goat_debug`).
+- To compile with CMake, execute `make goat_cmake` (or `make goat_cmake_debug`). The CMake build trees are kept under `build-cmake/` so they do not interfere with the original Make build.
+- Both build paths place `goat.exe` or `goat_debug.exe` in the `executables` directory.
 - To link properly to the newly compiled executables, rerun `source setup.csh` again
 
 To test if installation was successful, try one of the example cases (see Usage section below). 

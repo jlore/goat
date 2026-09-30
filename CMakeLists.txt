@@ -10,6 +10,7 @@ endif()
 
 find_package(OpenMP REQUIRED)
 find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
 
 find_path(SUITESPARSE_INCLUDE_DIR
   NAMES umfpack.h
@@ -155,6 +156,7 @@ target_link_libraries(goat PRIVATE
   OpenMP::OpenMP_Fortran
   OpenMP::OpenMP_C
   BLAS::BLAS
+  LAPACK::LAPACK
   "${UMFPACK_LIBRARY}"
   "${CXSPARSE_LIBRARY}"
 )
