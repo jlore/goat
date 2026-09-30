@@ -201,8 +201,13 @@ module goatmod_userinput
         !                            into a group of stacked triangles
         ! - stacked_to_cutcell: apply transformation from stacked triangles
         !                       to cutcell
-        ! - stacked_to_cutcell: switch to transform to cutcell based on face
-        !                       length of the aligned faces of the triangles
+        ! - stacked_to_cutcell_nonuniform: distribute new boundary vertices
+        !                       based on aligned-face lengths instead of
+        !                       uniformly
+        ! - stacked_to_cutcell_labels: boundary labels eligible for the
+        !                       conversion; an empty list allows all labels
+        ! - stacked_to_cutcell_min_cells: minimum number of triangles in an
+        !                       eligible stack
         ! - split_shaved_off_tube: apply radial splitting a concavely shaved
         !                           off fluxtube at the outer boundary
         ! - splitting: apply splitting of cells
@@ -358,6 +363,8 @@ module goatmod_userinput
 
         logical                     :: stacked_to_cutcell
         logical                     :: stacked_to_cutcell_nonuniform
+        integer(I8), allocatable    :: stacked_to_cutcell_labels(:)
+        integer(I8)                 :: stacked_to_cutcell_min_cells
 
         logical                     :: split_shaved_off_tube
 
@@ -1150,6 +1157,8 @@ module goatmod_userinput
 
         options%stacked_to_cutcell                  = .false.
         options%stacked_to_cutcell_nonuniform          = .true.
+        options%stacked_to_cutcell_labels           = [integer(I8) ::]
+        options%stacked_to_cutcell_min_cells        = 2
 
         options%split_shaved_off_tube               = .false.
 
@@ -1872,6 +1881,10 @@ module goatmod_userinput
         call ExtractOptionValueLogical0D(fid, field, options%stacked_to_cutcell)
         field = 'ga.stacked_to_cutcell_nonuniform'
         call ExtractOptionValueLogical0D(fid, field, options%stacked_to_cutcell_nonuniform) 
+        field = 'ga.stacked_to_cutcell_labels'
+        call ExtractOptionValueInteger1D(fid, field, options%stacked_to_cutcell_labels)
+        field = 'ga.stacked_to_cutcell_min_cells'
+        call ExtractOptionValueInteger0D(fid, field, options%stacked_to_cutcell_min_cells)
                
         ! Splitting and merging
         field = 'ga.splitting'

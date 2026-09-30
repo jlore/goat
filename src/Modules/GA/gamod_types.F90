@@ -7889,7 +7889,9 @@ module gamod_types
         print *, 'Apply StackedToCutcell'
 
         ! Detection of stacked triangles
-        call grid%DetectStackedTrias(found, cvs, nc, bfcs)
+        call grid%DetectStackedTrias(found, cvs, nc, bfcs, &
+            options%stacked_to_cutcell_labels, &
+            options%stacked_to_cutcell_min_cells)
 
         ! Adaptation
         do while (found)
@@ -8183,7 +8185,9 @@ module gamod_types
             call grid%RemoveCells(rem_cells)
 
             ! Detection
-            call grid%DetectStackedTrias(found, cvs, nc, bfcs)
+            call grid%DetectStackedTrias(found, cvs, nc, bfcs, &
+                options%stacked_to_cutcell_labels, &
+                options%stacked_to_cutcell_min_cells)
 
             ! Housekeeping
             deallocate(rem_faces)
@@ -8207,7 +8211,8 @@ module gamod_types
 
     end subroutine
 
-    subroutine DetectStackedTrias(grid, found, cvs, counter, boundary_face)
+    subroutine DetectStackedTrias(grid, found, cvs, counter, boundary_face, &
+        allowed_labels, min_cells)
 
         ! Description
         !============
@@ -8222,6 +8227,8 @@ module gamod_types
         integer(I8), intent(out)        :: counter
         integer(I8), intent(out)        :: boundary_face
         integer(I8), allocatable, intent(out) :: cvs(:)
+        integer(I8), intent(in)                :: allowed_labels(:)
+        integer(I8), intent(in)                :: min_cells
 
         ! Auxiliary
         integer(I8) :: i, v11, v12, v21, v22, nf, fcs, ifc, prev_cv, &
@@ -8242,6 +8249,10 @@ module gamod_types
         ! Initialize
         found = .false.
         boundary_face = 0
+        if (min_cells < 2_I8) then
+            call gdErrorHandler('DetectStackedTrias: min_cells must be ' // &
+                'at least two')
+        end if
         allocate(cvsD(c%ntot))
         counter = 0
         nrejected = 0
@@ -8258,6 +8269,11 @@ module gamod_types
 
             ! Get boundary face
             ifc = bfaces(i)
+            cvsD = 0
+            counter = 0
+            if (size(allowed_labels) > 0) then
+                if (.not. any(f%label%Get(ifc) == allowed_labels)) cycle
+            end if
             fcs = bfaces(i)
 
             ! Get boundary cells
@@ -8344,29 +8360,7 @@ module gamod_types
 
             end do
 
-            if (counter .gt. 1) then
-
-                exit
-
-            else
-
-                ! Reinitialization
-                cvsD = 0
-                counter = 0 
-
-            end if
-
-        end do
-
-        ! Report candidates skipped because of malformed or ambiguous
-        ! connectivity, so their absence from the conversion is visible.
-        if (nrejected > 0) then
-            print *, 'DetectStackedTrias: skipped ', nrejected, &
-                ' candidate chains with ambiguous or malformed connectivity'
-        end if
-
-        ! Post-process
-        if (counter .gt. 1) then
+            if (counter <= 1) cycle
 
             if (nf == 0) then
 
@@ -8387,10 +8381,23 @@ module gamod_types
 
             end if
 
-            ! Flag
+            if (counter < min_cells) cycle
+
             found = .true.
             boundary_face = ifc
+            exit
 
+        end do
+
+        if (.not. found) then
+            counter = 0
+        end if
+
+        ! Report candidates skipped because of malformed or ambiguous
+        ! connectivity, so their absence from the conversion is visible.
+        if (nrejected > 0) then
+            print *, 'DetectStackedTrias: skipped ', nrejected, &
+                ' candidate chains with ambiguous or malformed connectivity'
         end if
 
         ! Trim
