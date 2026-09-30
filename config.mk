@@ -75,6 +75,7 @@ COMPDIRVARS += -DMUMPS
 endif
 
 ## SOLPSTOP            : path to SOLPS (overridden if SOLPSTOP is define)
+## GOAT_DISABLE_SOLPS  : set to true to build standalone when SOLPSTOP is defined
 ifdef SOLPSTOP
     ifndef GOAT_DISABLE_SOLPS
         DOSOLPS = true

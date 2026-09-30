@@ -30,6 +30,7 @@ Having these dependencies installed, the code is installed as follows:
 - `cd` into the top folder after cloning and execute `source setup.csh`. This will load in the necessary environment variables for compilation.
 - To compile with the original Make build, execute `make goat` (or `make goat_debug`).
 - To compile with CMake, execute `make goat_cmake` (or `make goat_cmake_debug`). The CMake build trees are kept under `build-cmake/` so they do not interfere with the original Make build.
+- If `SOLPSTOP` is set but a standalone executable is desired, execute `setenv GOAT_DISABLE_SOLPS true` before using either build system.
 - Both build paths place `goat.exe` or `goat_debug.exe` in the `executables` directory.
 - To link properly to the newly compiled executables, rerun `source setup.csh` again
 
