@@ -264,12 +264,22 @@ module gamod_types
         ! Flux data
         type(GAFluxDataUDT)           :: fluxdata
 
-        ! X-point(s), separatrices
-        integer(I8), allocatable, dimension(:)  :: xpointID, sepID
-        integer(I8)                             :: nxp, nsep
+        ! Topological data carried through adaptation.  Mutation routines
+        ! below keep stored vertex and face IDs synchronized with the grid.
+        integer(I8), allocatable, dimension(:)  :: xpointID, sepID, &
+            spointID, opointID, tpointID, isprimaryxp, spointxpID, &
+            divFc, spointdivID, tpointdivID
+        integer(I8), allocatable, dimension(:, :) :: divFcP
+        integer(I8)                             :: nxp, nsep, nsp, nop, &
+            ntp, ndiv, ndivFc, topoflag
+        type(StructuredGridDataUDT)             :: sglegacy
 
-        ! logicals
+        ! Additional GOAT grid-generator metadata.  The per-face and
+        ! per-vertex arrays are dynamic because GA changes their lengths.
         logical(I8)                             :: hasGoatGGData
+        class(IntegerDynamicArrayBufferedUDT), allocatable :: TMfacetype, &
+            TMverttype, BLind
+        integer(I8), allocatable, dimension(:)  :: facelabelsGG, facelabelsGD
             
     contains
 
@@ -507,6 +517,7 @@ module gamod_types
         procedure :: RemoveCells
         procedure :: RemoveFaces
         procedure :: RemoveVertices
+        procedure :: ReplaceDivertorFace
         procedure :: GetFaceNumber
         procedure :: AddFaceToFsFc
         procedure :: AddVertToFsVx
@@ -2664,6 +2675,13 @@ module gamod_types
 
         ! Initialize
         call GAgriddata%fluxdata%Initialize()     
+        if (allocated(GAgriddata%TMfacetype)) &
+            deallocate(GAgriddata%TMfacetype)
+        if (allocated(GAgriddata%TMverttype)) &
+            deallocate(GAgriddata%TMverttype)
+        if (allocated(GAgriddata%BLind)) deallocate(GAgriddata%BLind)
+        allocate(IntegerDynamicArrayBufferedUDT:: GAgriddata%TMfacetype, &
+            GAgriddata%TMverttype, GAgriddata%BLind)
 
     end subroutine
 
@@ -2694,6 +2712,208 @@ module gamod_types
 
     end subroutine
 
+    subroutine CheckTopologyVertexIDs(ids, expected_size, nvert, name, context)
+
+        ! Check the size and bounds of an array containing global vertex IDs.
+
+        integer(I8), intent(in) :: ids(:), expected_size, nvert
+        character(*), intent(in) :: name, context
+
+        if (size(ids) /= expected_size) then
+            call gdErrorHandler(trim(context) // ': ' // trim(name) // &
+                ' length does not match its count')
+        end if
+        if (any(ids < 1_I8) .or. any(ids > nvert)) then
+            call gdErrorHandler(trim(context) // ': ' // trim(name) // &
+                ' contains a vertex ID outside the grid')
+        end if
+
+    end subroutine
+
+    subroutine CheckDivertorFaceData(divFc, divFcP, ndivFc, ndiv, nface, &
+        context)
+
+        ! Check the packed divertor-face list and its per-target pointers.
+
+        integer(I8), intent(in) :: divFc(:), divFcP(:, :)
+        integer(I8), intent(in) :: ndivFc, ndiv, nface
+        character(*), intent(in) :: context
+
+        integer(I8) :: i, next_face
+
+        if (size(divFc) /= ndivFc) then
+            call gdErrorHandler(trim(context) // &
+                ': divFc length does not match ndivFc')
+        end if
+        if (size(divFcP, 1) /= ndiv .or. size(divFcP, 2) /= 2) then
+            call gdErrorHandler(trim(context) // &
+                ': divFcP shape does not match ndiv')
+        end if
+        if (any(divFc < 1_I8) .or. any(divFc > nface)) then
+            call gdErrorHandler(trim(context) // &
+                ': divFc contains a face ID outside the grid')
+        end if
+
+        next_face = 1
+        do i = 1, ndiv
+            if (divFcP(i, 1) /= next_face .or. divFcP(i, 2) < 0) then
+                call gdErrorHandler(trim(context) // &
+                    ': divFcP does not describe contiguous valid ranges')
+            end if
+            next_face = next_face + divFcP(i, 2)
+        end do
+        if (next_face - 1 /= ndivFc) then
+            call gdErrorHandler(trim(context) // &
+                ': divFcP ranges do not cover divFc')
+        end if
+
+    end subroutine
+
+    subroutine CheckGridTopologyData(grid, context)
+
+        ! Validate fixed-size topology metadata before converting it to the
+        ! buffered representation used by GA.
+
+        type(GridUDT), intent(in) :: grid
+        character(*), intent(in)  :: context
+
+        associate(gd => grid%data)
+
+        if (.not. allocated(gd%xpointID) .or. &
+            .not. allocated(gd%isprimaryxp) .or. &
+            .not. allocated(gd%spointID) .or. &
+            .not. allocated(gd%spointdivID) .or. &
+            .not. allocated(gd%opointID) .or. &
+            .not. allocated(gd%tpointdivID) .or. &
+            .not. allocated(gd%sepID) .or. &
+            .not. allocated(gd%divFc) .or. &
+            .not. allocated(gd%divFcP)) then
+            call gdErrorHandler(trim(context) // &
+                ': topological arrays are not fully allocated')
+        end if
+
+        call CheckTopologyVertexIDs(gd%xpointID, gd%nxp, &
+            grid%vert%ntot, 'xpointID', context)
+        call CheckTopologyVertexIDs(gd%spointID, gd%nsp, &
+            grid%vert%ntot, 'spointID', context)
+        call CheckTopologyVertexIDs(gd%opointID, gd%nop, &
+            grid%vert%ntot, 'opointID', context)
+        if (allocated(gd%tpointID)) then
+            call CheckTopologyVertexIDs(gd%tpointID, gd%ntp, &
+                grid%vert%ntot, 'tpointID', context)
+        else if (gd%ntp /= 0) then
+            call gdErrorHandler(trim(context) // &
+                ': tpointID is missing for nonzero ntp')
+        end if
+        if (allocated(gd%spointxpID)) then
+            call CheckTopologyVertexIDs(gd%spointxpID, gd%nsp, &
+                grid%vert%ntot, 'spointxpID', context)
+        else if (gd%nsp /= 0) then
+            call gdErrorHandler(trim(context) // &
+                ': spointxpID is missing for nonzero nsp')
+        end if
+
+        if (size(gd%isprimaryxp) /= gd%nxp .or. &
+            size(gd%spointdivID) /= gd%nsp .or. &
+            size(gd%tpointdivID) /= gd%ntp .or. &
+            size(gd%sepID) /= gd%nsep) then
+            call gdErrorHandler(trim(context) // &
+                ': topological companion-array length is inconsistent')
+        end if
+        call CheckDivertorFaceData(gd%divFc, gd%divFcP, gd%ndivFc, &
+            gd%ndiv, grid%face%ntot, context)
+
+        if (gd%hasGoatGGData) then
+            if (.not. allocated(gd%goatggdata%TMfacetype) .or. &
+                .not. allocated(gd%goatggdata%TMverttype) .or. &
+                .not. allocated(gd%goatggdata%BLind) .or. &
+                .not. allocated(gd%goatggdata%facelabelsGG) .or. &
+                .not. allocated(gd%goatggdata%facelabelsGD)) then
+                call gdErrorHandler(trim(context) // &
+                    ': GOAT-GG metadata arrays are not fully allocated')
+            end if
+            if (size(gd%goatggdata%TMfacetype) /= grid%face%ntot .or. &
+                size(gd%goatggdata%BLind) /= grid%face%ntot .or. &
+                size(gd%goatggdata%TMverttype) /= grid%vert%ntot) then
+                call gdErrorHandler(trim(context) // &
+                    ': GOAT-GG metadata lengths do not match the grid')
+            end if
+        end if
+
+        end associate
+
+    end subroutine
+
+    subroutine CheckGAGridTopologyData(grid, context)
+
+        ! Validate buffered topology metadata before allocating the output
+        ! GridUDT and copying the data back from GA.
+
+        type(GAGridUDT), intent(in) :: grid
+        character(*), intent(in)    :: context
+
+        associate(gd => grid%data)
+
+        if (.not. allocated(gd%xpointID) .or. &
+            .not. allocated(gd%isprimaryxp) .or. &
+            .not. allocated(gd%spointID) .or. &
+            .not. allocated(gd%spointxpID) .or. &
+            .not. allocated(gd%spointdivID) .or. &
+            .not. allocated(gd%opointID) .or. &
+            .not. allocated(gd%tpointID) .or. &
+            .not. allocated(gd%tpointdivID) .or. &
+            .not. allocated(gd%sepID) .or. &
+            .not. allocated(gd%divFc) .or. &
+            .not. allocated(gd%divFcP)) then
+            call gdErrorHandler(trim(context) // &
+                ': topological arrays are not fully allocated')
+        end if
+
+        call CheckTopologyVertexIDs(gd%xpointID, gd%nxp, &
+            grid%vert%ntot, 'xpointID', context)
+        call CheckTopologyVertexIDs(gd%spointID, gd%nsp, &
+            grid%vert%ntot, 'spointID', context)
+        call CheckTopologyVertexIDs(gd%opointID, gd%nop, &
+            grid%vert%ntot, 'opointID', context)
+        call CheckTopologyVertexIDs(gd%tpointID, gd%ntp, &
+            grid%vert%ntot, 'tpointID', context)
+        call CheckTopologyVertexIDs(gd%spointxpID, gd%nsp, &
+            grid%vert%ntot, 'spointxpID', context)
+
+        if (size(gd%isprimaryxp) /= gd%nxp .or. &
+            size(gd%spointdivID) /= gd%nsp .or. &
+            size(gd%tpointdivID) /= gd%ntp .or. &
+            size(gd%sepID) /= gd%nsep) then
+            call gdErrorHandler(trim(context) // &
+                ': topological companion-array length is inconsistent')
+        end if
+        call CheckDivertorFaceData(gd%divFc, gd%divFcP, gd%ndivFc, &
+            gd%ndiv, grid%face%ntot, context)
+
+        if (gd%hasGoatGGData) then
+            if (.not. allocated(gd%TMfacetype) .or. &
+                .not. allocated(gd%TMverttype) .or. &
+                .not. allocated(gd%BLind)) then
+                call gdErrorHandler(trim(context) // &
+                    ': buffered GOAT-GG arrays are not allocated')
+            end if
+            if (.not. allocated(gd%facelabelsGG) .or. &
+                .not. allocated(gd%facelabelsGD)) then
+                call gdErrorHandler(trim(context) // &
+                    ': GOAT-GG face-label maps are not allocated')
+            end if
+            if (gd%TMfacetype%Size() /= grid%face%ntot .or. &
+                gd%BLind%Size() /= grid%face%ntot .or. &
+                gd%TMverttype%Size() /= grid%vert%ntot) then
+                call gdErrorHandler(trim(context) // &
+                    ': buffered GOAT-GG metadata lengths do not match the grid')
+            end if
+        end if
+
+        end associate
+
+    end subroutine
+
     subroutine TranslateGridTOGAGrid(grid,GAgrid)
 
         ! Description
@@ -2705,6 +2925,8 @@ module gamod_types
         ! Arguments
         type(GridUDT), intent(in)       :: grid
         type(GAGridUDT), intent(out)    :: GAgrid
+
+        call CheckGridTopologyData(grid, 'TranslateGridToGAGrid')
 
         ! Initialize GAGrid
         call GAgrid%Initialize()
@@ -2787,7 +3009,41 @@ module gamod_types
         GAgrid%data%nxp         = grid%data%nxp
         GAgrid%data%sepID       = grid%data%sepID
         GAgrid%data%nsep        = grid%data%nsep
+        GAgrid%data%spointID    = grid%data%spointID
+        GAgrid%data%opointID    = grid%data%opointID
+        GAgrid%data%isprimaryxp = grid%data%isprimaryxp
+        GAgrid%data%spointdivID = grid%data%spointdivID
+        GAgrid%data%tpointdivID = grid%data%tpointdivID
+        GAgrid%data%divFc       = grid%data%divFc
+        GAgrid%data%divFcP      = grid%data%divFcP
+        GAgrid%data%nsp         = grid%data%nsp
+        GAgrid%data%nop         = grid%data%nop
+        GAgrid%data%ntp         = grid%data%ntp
+        GAgrid%data%ndiv        = grid%data%ndiv
+        GAgrid%data%ndivFc      = grid%data%ndivFc
+        GAgrid%data%topoflag    = grid%data%topoflag
+        GAgrid%data%sglegacy    = grid%data%sglegacy
+        if (allocated(grid%data%tpointID)) then
+            GAgrid%data%tpointID = grid%data%tpointID
+        else
+            allocate(GAgrid%data%tpointID(0))
+        end if
+        if (allocated(grid%data%spointxpID)) then
+            GAgrid%data%spointxpID = grid%data%spointxpID
+        else
+            allocate(GAgrid%data%spointxpID(0))
+        end if
         GAgrid%data%hasGoatGGData = grid%data%hasGoatGGData
+        if (grid%data%hasGoatGGData) then
+            GAgrid%data%TMfacetype = ConstructIntegerDynamicArrayBuffered( &
+                grid%data%goatggdata%TMfacetype)
+            GAgrid%data%TMverttype = ConstructIntegerDynamicArrayBuffered( &
+                grid%data%goatggdata%TMverttype)
+            GAgrid%data%BLind = ConstructIntegerDynamicArrayBuffered( &
+                grid%data%goatggdata%BLind)
+            GAgrid%data%facelabelsGG = grid%data%goatggdata%facelabelsGG
+            GAgrid%data%facelabelsGD = grid%data%goatggdata%facelabelsGD
+        end if
         GAfd%fluxsurfacefacesP1 = ConstructIntegerDynamicArrayBuffered(gfd%fluxsurfacefacesP(:,1))
         GAfd%fluxsurfacefacesP2 = ConstructIntegerDynamicArrayBuffered(gfd%fluxsurfacefacesP(:,2))
         GAfd%fluxsurfacefaces   = ConstructIntegerDynamicArrayBuffered( &
@@ -2831,6 +3087,8 @@ module gamod_types
         ! Auxiliary
         integer(I8) :: i
         integer(I8), allocatable, dimension(:) :: vxs
+
+        call CheckGAGridTopologyData(GAgrid, 'TranslateGAGridToGrid')
 
 
         ! Give information in GAgrid to grid
@@ -2890,7 +3148,30 @@ module gamod_types
         grid%data%nxp               = GAgrid%data%nxp
         grid%data%sepID             = GAgrid%data%sepID
         grid%data%nsep              = GAgrid%data%nsep
+        grid%data%spointID          = GAgrid%data%spointID
+        grid%data%opointID          = GAgrid%data%opointID
+        grid%data%tpointID          = GAgrid%data%tpointID
+        grid%data%isprimaryxp       = GAgrid%data%isprimaryxp
+        grid%data%spointxpID        = GAgrid%data%spointxpID
+        grid%data%spointdivID       = GAgrid%data%spointdivID
+        grid%data%tpointdivID       = GAgrid%data%tpointdivID
+        grid%data%divFc             = GAgrid%data%divFc
+        grid%data%divFcP            = GAgrid%data%divFcP
+        grid%data%nsp               = GAgrid%data%nsp
+        grid%data%nop               = GAgrid%data%nop
+        grid%data%ntp               = GAgrid%data%ntp
+        grid%data%ndiv              = GAgrid%data%ndiv
+        grid%data%ndivFc            = GAgrid%data%ndivFc
+        grid%data%topoflag          = GAgrid%data%topoflag
+        grid%data%sglegacy          = GAgrid%data%sglegacy
         grid%data%hasGoatGGData     = GAgrid%data%hasGoatGGData
+        if (GAgrid%data%hasGoatGGData) then
+            grid%data%goatggdata%TMfacetype = GAgrid%data%TMfacetype%Get()
+            grid%data%goatggdata%TMverttype = GAgrid%data%TMverttype%Get()
+            grid%data%goatggdata%BLind = GAgrid%data%BLind%Get()
+            grid%data%goatggdata%facelabelsGG = GAgrid%data%facelabelsGG
+            grid%data%goatggdata%facelabelsGD = GAgrid%data%facelabelsGD
+        end if
         gfd%fluxsurfacefacesP(:,1)  = GAfd%fluxsurfacefacesP1%Get()
         gfd%fluxsurfacefacesP(:,2)  = GAfd%fluxsurfacefacesP2%Get()
         gfd%fluxsurfacefaces        = GAfd%fluxsurfacefaces%Get()
@@ -7582,7 +7863,8 @@ module gamod_types
 
         ! Auxiliary
         integer(I8) :: i, ic, nc, nv, v1, v2, start_vertex, end_vertex, ind, &
-            bfcs, lbl, vxs(2), face_num, new_verts3(3), new_faces3(3), &
+            bfcs, lbl, breg, btmtype, bblind, vxs(2), face_num, &
+            new_verts3(3), new_faces3(3), &
             new_verts4(4), new_faces4(4), fcsA, fcst_up_correct, fcst_al, &
             c_fcs
         integer(I8), allocatable, dimension(:) :: cvs, fcs, &
@@ -7607,16 +7889,26 @@ module gamod_types
         print *, 'Apply StackedToCutcell'
 
         ! Detection of stacked triangles
-        call grid%DetectStackedTrias(found, cvs, nc)
+        call grid%DetectStackedTrias(found, cvs, nc, bfcs)
 
         ! Adaptation
         do while (found)
 
-            ! Get boundary face
-            fcs = GetCellFaceGA(c, cvs(1))
-            ind = findloc(isBoundaryFaceGA(grid, fcs), .true. ,1)
-            bfcs = fcs(ind)
+            if (nc < 2) then
+                call gdErrorHandler('StackedToCutcell: detector returned ' // &
+                    'fewer than two cells')
+            end if
+
+            ! Preserve data from the exact boundary face selected by the
+            ! detector. A corner cell can have more than one boundary face.
             lbl = f%label%Get(bfcs)
+            breg = f%reg%Get(bfcs)
+            btmtype = 0
+            bblind = 0
+            if (grid%data%hasGoatGGData) then
+                btmtype = grid%data%TMfacetype%Get(bfcs)
+                bblind = grid%data%BLind%Get(bfcs)
+            end if
 
             ! Save the regions
             regs = c%reg%Get()
@@ -7714,6 +8006,10 @@ module gamod_types
             call v%bx%Append(v1_bx)
             call v%by%Append(v1_by)
             v%ntot = v%ntot + nv
+            if (grid%data%hasGoatGGData) then
+                ar = (/ (0_I8, i = 1, nv) /)
+                call grid%data%TMverttype%Append(ar)
+            end if
 
             deallocate(v1_bx)
             deallocate(v1_by)
@@ -7734,6 +8030,20 @@ module gamod_types
             ! Give face label
             ar = (/ (lbl, i = 1, nc)/)
             call f%label%Set(new_bfcs,ar)
+
+            ! Preserve the input region of the subdivided boundary face.
+            ar = (/ (breg, i = 1, nc)/)
+            call f%reg%Set(new_bfcs,ar)
+            if (grid%data%hasGoatGGData) then
+                ar = (/ (btmtype, i = 1, nc)/)
+                call grid%data%TMfacetype%Set(new_bfcs, ar)
+                ar = (/ (bblind, i = 1, nc)/)
+                call grid%data%BLind%Set(new_bfcs, ar)
+            end if
+
+            ! Replace the original face in the divertor-face list before it
+            ! is removed and the global face numbering is compacted.
+            call grid%ReplaceDivertorFace(bfcs, new_bfcs)
 
             ! Make new internal faces
             ! Get the internal vertixes 
@@ -7873,7 +8183,7 @@ module gamod_types
             call grid%RemoveCells(rem_cells)
 
             ! Detection
-            call grid%DetectStackedTrias(found, cvs, nc)
+            call grid%DetectStackedTrias(found, cvs, nc, bfcs)
 
             ! Housekeeping
             deallocate(rem_faces)
@@ -7897,7 +8207,7 @@ module gamod_types
 
     end subroutine
 
-    subroutine DetectStackedTrias(grid, found, cvs, counter)
+    subroutine DetectStackedTrias(grid, found, cvs, counter, boundary_face)
 
         ! Description
         !============
@@ -7910,6 +8220,7 @@ module gamod_types
         class(GAGridUDT), intent(in)    :: grid
         logical, intent(out)            :: found
         integer(I8), intent(out)        :: counter
+        integer(I8), intent(out)        :: boundary_face
         integer(I8), allocatable, intent(out) :: cvs(:)
 
         ! Auxiliary
@@ -7930,6 +8241,7 @@ module gamod_types
 
         ! Initialize
         found = .false.
+        boundary_face = 0
         allocate(cvsD(c%ntot))
         counter = 0
         nrejected = 0
@@ -8077,6 +8389,7 @@ module gamod_types
 
             ! Flag
             found = .true.
+            boundary_face = ifc
 
         end if
 
@@ -18530,6 +18843,126 @@ module gamod_types
 
     end subroutine
 
+    subroutine ReplaceDivertorFace(grid, old_face, new_faces)
+
+        ! Replace one subdivided divertor face while preserving the packed
+        ! per-target face list and its pointers.
+
+        class(GAGridUDT), intent(inout) :: grid
+        integer(I8), intent(in)         :: old_face
+        integer(I8), intent(in)         :: new_faces(:)
+
+        integer(I8)                     :: old_index, target, increase, &
+            target_start, target_count, neighbor_face, shared_vertex
+        integer(I8)                     :: old_vertices(2), neighbor_vertices(2)
+        integer(I8), allocatable        :: ordered_faces(:), updated_faces(:)
+        logical                         :: first_connected, last_connected
+
+        associate(gd => grid%data)
+
+        if (.not. allocated(gd%divFc)) return
+        if (count(gd%divFc == old_face) == 0) return
+
+        if (count(gd%divFc == old_face) /= 1) then
+            call gdErrorHandler('ReplaceDivertorFace: old face must occur ' // &
+                'exactly once in divFc')
+        end if
+        if (size(new_faces) == 0) then
+            call gdErrorHandler('ReplaceDivertorFace: replacement face list ' // &
+                'must not be empty')
+        end if
+        if (.not. allocated(gd%divFcP)) then
+            call gdErrorHandler('ReplaceDivertorFace: divFcP is not allocated')
+        end if
+        if (gd%ndivFc /= size(gd%divFc) .or. &
+            gd%ndiv /= size(gd%divFcP, 1)) then
+            call gdErrorHandler('ReplaceDivertorFace: inconsistent divertor ' // &
+                'face metadata')
+        end if
+
+        old_index = findloc(gd%divFc, old_face, 1)
+        target = 0
+        do target = 1, gd%ndiv
+            if (old_index >= gd%divFcP(target, 1) .and. &
+                old_index < gd%divFcP(target, 1) + &
+                gd%divFcP(target, 2)) exit
+        end do
+        if (target > gd%ndiv) then
+            call gdErrorHandler('ReplaceDivertorFace: old face is outside ' // &
+                'the ranges described by divFcP')
+        end if
+
+        ! Keep the replacement segments in the same traversal direction as
+        ! the target-face list. Face endpoint order is not guaranteed to
+        ! match the order of faces in that list.
+        ordered_faces = new_faces
+        target_start = gd%divFcP(target, 1)
+        target_count = gd%divFcP(target, 2)
+        if (target_count > 1) then
+            old_vertices = [grid%face%vert1%Get(old_face), &
+                grid%face%vert2%Get(old_face)]
+            if (old_index > target_start) then
+                neighbor_face = gd%divFc(old_index - 1)
+            else
+                neighbor_face = gd%divFc(old_index + 1)
+            end if
+            neighbor_vertices = [grid%face%vert1%Get(neighbor_face), &
+                grid%face%vert2%Get(neighbor_face)]
+
+            shared_vertex = 0
+            if (any(neighbor_vertices == old_vertices(1))) &
+                shared_vertex = old_vertices(1)
+            if (any(neighbor_vertices == old_vertices(2))) then
+                if (shared_vertex /= 0) then
+                    call gdErrorHandler('ReplaceDivertorFace: neighboring ' // &
+                        'target faces share both vertices')
+                end if
+                shared_vertex = old_vertices(2)
+            end if
+            if (shared_vertex == 0) then
+                call gdErrorHandler('ReplaceDivertorFace: neighboring target ' // &
+                    'faces do not share a vertex')
+            end if
+
+            first_connected = any([&
+                grid%face%vert1%Get(ordered_faces(1)), &
+                grid%face%vert2%Get(ordered_faces(1))] == shared_vertex)
+            last_connected = any([&
+                grid%face%vert1%Get(ordered_faces(size(ordered_faces))), &
+                grid%face%vert2%Get(ordered_faces(size(ordered_faces)))] == &
+                shared_vertex)
+            if ((old_index > target_start .and. .not. first_connected) .or. &
+                (old_index == target_start .and. .not. last_connected)) then
+                if (.not. first_connected .and. .not. last_connected) then
+                    call gdErrorHandler('ReplaceDivertorFace: replacement ' // &
+                        'segments do not meet the neighboring target face')
+                end if
+                ordered_faces = ordered_faces(size(ordered_faces):1:-1)
+            end if
+        end if
+
+        increase = size(new_faces) - 1
+        allocate(updated_faces(gd%ndivFc + increase))
+        if (old_index > 1) then
+            updated_faces(1:old_index-1) = gd%divFc(1:old_index-1)
+        end if
+        updated_faces(old_index:old_index+size(ordered_faces)-1) = ordered_faces
+        if (old_index < gd%ndivFc) then
+            updated_faces(old_index+size(ordered_faces):) = &
+                gd%divFc(old_index+1:)
+        end if
+        call move_alloc(updated_faces, gd%divFc)
+
+        gd%ndivFc = size(gd%divFc)
+        gd%divFcP(target, 2) = gd%divFcP(target, 2) + increase
+        if (target < gd%ndiv) then
+            gd%divFcP(target+1:, 1) = gd%divFcP(target+1:, 1) + increase
+        end if
+
+        end associate
+
+    end subroutine
+
     subroutine RemoveFaces(grid, faces)
 
         ! Description
@@ -18550,7 +18983,8 @@ module gamod_types
         associate(&
             c => grid%cell, &
             f => grid%face, &
-            fd => grid%data%fluxdata &
+            fd => grid%data%fluxdata, &
+            gd => grid%data &
             )
         
         call Unique(faces, facesU)
@@ -18563,11 +18997,26 @@ module gamod_types
             call f%label%Remove(facesU)
             call f%reg%Remove(facesU)
             call f%aligned%Remove(facesU)
+            if (gd%hasGoatGGData) then
+                call gd%TMfacetype%Remove(facesU)
+                call gd%BLind%Remove(facesU)
+            end if
 
             do i = 1, nf
 
                 ! Adjusting all face number in cell%face
                 face_num = facesU(i) - (i-1)
+
+                ! Divertor-face lists use global face IDs. Subdivided faces
+                ! are replaced before removal, and all later IDs must follow
+                ! the face-array compaction.
+                if (allocated(gd%divFc)) then
+                    if (any(gd%divFc == face_num)) then
+                        call gdErrorHandler('RemoveFaces: removal of a ' // &
+                            'divertor face requires rebuilding divFcP')
+                    end if
+                    where (gd%divFc > face_num) gd%divFc = gd%divFc - 1
+                end if
 
                 call c%face%UpdateArray(face_num)
 
@@ -18613,21 +19062,55 @@ module gamod_types
         integer(I8), intent(in)         :: verts(:)
 
         ! Auxiliary
-        integer(I8) :: i, j, nv, vx_num, ind, ifs
-        integer(I8), allocatable :: vertsU(:)
+        integer(I8) :: i, nv, vx_num, ind, ifs
+        integer(I8), allocatable :: vertsU(:), tmvert(:)
 
         ! Associate
         associate(&
             c => grid%cell, &
             f => grid%face, &
             v => grid%vert, &
-            fd => grid%data%fluxdata &
+            fd => grid%data%fluxdata, &
+            gd => grid%data &
         )
 
         call Unique(verts, vertsU)
 
         nv = size(vertsU)
         if (nv /= 0) then
+
+            if (any(vertsU < 1) .or. any(vertsU > v%ntot)) then
+                call gdErrorHandler('RemoveVertices: vertex ID outside grid bounds')
+            end if
+
+            ! Removing a named topological point would invalidate the
+            ! associated topology rather than merely renumber it.
+            do i = 1, nv
+                if (any(gd%xpointID == vertsU(i)) .or. &
+                    any(gd%spointID == vertsU(i)) .or. &
+                    any(gd%opointID == vertsU(i)) .or. &
+                    any(gd%tpointID == vertsU(i)) .or. &
+                    any(gd%spointxpID == vertsU(i))) then
+                    call gdErrorHandler('RemoveVertices: cannot remove a ' // &
+                        'topological-point vertex')
+                end if
+            end do
+
+            if (gd%hasGoatGGData) then
+                if (.not. allocated(gd%TMverttype)) then
+                    call gdErrorHandler('RemoveVertices: TMverttype is not allocated')
+                end if
+                if (gd%TMverttype%Size() /= v%ntot) then
+                    call gdErrorHandler('RemoveVertices: TMverttype length ' // &
+                        'does not match the vertex count')
+                end if
+                tmvert = gd%TMverttype%Get()
+                if (any(tmvert(vertsU) /= 0)) then
+                    call gdErrorHandler('RemoveVertices: cannot remove a ' // &
+                        'topological-mesh vertex')
+                end if
+                call gd%TMverttype%Remove(vertsU)
+            end if
 
             call v%x%Remove(vertsU)
             call v%y%Remove(vertsU)
@@ -18664,11 +19147,13 @@ module gamod_types
             ! Update fsVx
             call fd%fluxsurfaceverts%UpdateArray(vx_num)
 
-            ! Update xpointID
-            do j = 1, grid%data%nxp
-                if (grid%data%xpointID(j) .gt. vx_num) &
-                    grid%data%xpointID(j) = grid%data%xpointID(j) - 1
-            end do
+            ! Update every retained array that stores a vertex ID.
+            where (gd%xpointID > vx_num) gd%xpointID = gd%xpointID - 1
+            where (gd%spointID > vx_num) gd%spointID = gd%spointID - 1
+            where (gd%opointID > vx_num) gd%opointID = gd%opointID - 1
+            where (gd%tpointID > vx_num) gd%tpointID = gd%tpointID - 1
+            where (gd%spointxpID > vx_num) &
+                gd%spointxpID = gd%spointxpID - 1
            
         end do
 
@@ -18733,6 +19218,10 @@ module gamod_types
                 call grid%face%label%Append(0)
                 call grid%face%reg%Append(0)
                 call grid%face%aligned%Append(0)
+                if (grid%data%hasGoatGGData) then
+                    call grid%data%TMfacetype%Append(0)
+                    call grid%data%BLind%Append(0)
+                end if
                 grid%face%ntot = face_num
 
             else
@@ -18751,6 +19240,10 @@ module gamod_types
             call grid%face%label%Append(0)
             call grid%face%reg%Append(0)
             call grid%face%aligned%Append(0)
+            if (grid%data%hasGoatGGData) then
+                call grid%data%TMfacetype%Append(0)
+                call grid%data%BLind%Append(0)
+            end if
             grid%face%ntot = face_num
 
         else
@@ -19192,6 +19685,9 @@ module gamod_types
         call v%psi%Append(v1_psi)
         call v%bx%Append(v1_bx)
         call v%by%Append(v1_by)
+        if (grid%data%hasGoatGGData) then
+            call grid%data%TMverttype%Append(0_I8)
+        end if
 
         ! Increase total number of vertices and output the vertex number
         v%ntot = v%ntot + 1
