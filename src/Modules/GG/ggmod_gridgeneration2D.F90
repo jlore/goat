@@ -3412,23 +3412,19 @@ module ggmod_gridgeneration2D
                     tracingdir(i), magneticField, thislinerefoptions, &
                     celldata(i)%legalcellstyle, graph, skipvert)
 
-                ! If none are legal, then throw warning for 
-                ! overlapping cells and reset
+                ! Stop rather than emitting a grid known to contain folded or
+                ! overlapping cells. Downstream metric construction cannot
+                ! repair this topology safely.
                 if (.not. any([islegaltria1, islegaltria2, islegalquad])) then 
-                    ! We don't have a fix for this yet...
-                    print *, 'ConstructCellsQuadTria: could not ' // & 
-                        'find non-overlapping cell. Overlapping ' // &
-                        'cells will be present in the grid...'
                     print *, 'cell: ', i, 'line: ', j, 'near vertex ID: ', &
                         l1%vert(k1), 'coordinates: ', l1%xv(k1), l1%yv(k1)
                     !$omp critical
                     call tubes(j)%VisualizeGraph('lpgraph')
                     !$omp end critical
 
-                    ! Reset to continue...
-                    islegaltria1 = .true. 
-                    islegaltria2 = .true. 
-                    islegalquad = .true. 
+                    call gdErrorHandler('ConstructCellsQuadTria: no legal ' // &
+                        'non-overlapping triangle or quadrilateral can be ' // &
+                        'constructed; grid generation stopped')
 
                 end if 
 
