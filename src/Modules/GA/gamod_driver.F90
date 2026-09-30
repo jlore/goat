@@ -580,61 +580,73 @@ module gamod_driver
         ! inner secondary target => fcReg == 5
         ! inner secondary target => fcReg == 8  
         
-        ! Locally 
-        fcLbL_loc = GetfcLblGA(grid%face,options)
+        if (options%preserve_face_regions) then
 
-        call Unique(fcLbl_loc, lbls)
-        allocate(lbls2(count(lbls /= 0)))
-        lbls2 = pack(lbls,lbls /= 0)
-        nl = size(lbls2)
+            ! Structure-based and forced-general grids can have more boundary
+            ! labels than the legacy target mapping supports. Keep the face
+            ! regions maintained by GA instead of inferring them again from
+            ! boundary labels.
+            fcReg = grid%face%reg%Get()
 
-        if (nl .gt. size(options%fcRegmappingGA)) then
-            call gdErrorHandler('PostProcesGA: fcReg mapping not compitable for GA labels,(more than 4 taegets)')
-        end if
+        else
 
-        ! Reset fcReg to zero and apply at the right faces
-        fcReg = 0
-        indFc = (/ (i, i=1,grid%face%ntot) /)
-        do i = 1, nl
-            lb = lbls2(i)
-            allocate(ind(count(fcLbl_loc == lb)))
-            ind = pack(indFc,fcLbl_loc == lb )
-            if (lb .lt. 1 .or. lb .gt. size(options%fcRegmappingGA)) then
-                print *, 'Label out of range: ', lb
-                call gdErrorHandler('PostProcessGA: label out of range for fcRegmappingGA, check facelabelmapping')
+            ! Determine the local face labels used by the legacy mapping.
+            fcLbL_loc = GetfcLblGA(grid%face,options)
+
+            call Unique(fcLbl_loc, lbls)
+            allocate(lbls2(count(lbls /= 0)))
+            lbls2 = pack(lbls,lbls /= 0)
+            nl = size(lbls2)
+
+            if (nl .gt. size(options%fcRegmappingGA)) then
+                call gdErrorHandler('PostProcesGA: fcReg mapping not compitable for GA labels,(more than 4 taegets)')
             end if
-            fcReg(ind) = options%fcRegmappingGA(lb)
-            deallocate(ind)
-        end do
 
-        ! Self-check if faces with fcReg label can be chained together
-        do i = 1, size(options%fcRegmappingGA)
+            ! Reset fcReg to zero and apply at the right faces
+            fcReg = 0
+            indFc = (/ (i, i=1,grid%face%ntot) /)
+            do i = 1, nl
+                lb = lbls2(i)
+                allocate(ind(count(fcLbl_loc == lb)))
+                ind = pack(indFc,fcLbl_loc == lb )
+                if (lb .lt. 1 .or. lb .gt. size(options%fcRegmappingGA)) then
+                    print *, 'Label out of range: ', lb
+                    call gdErrorHandler('PostProcessGA: label out of range for fcRegmappingGA, check facelabelmapping')
+                end if
+                fcReg(ind) = options%fcRegmappingGA(lb)
+                deallocate(ind)
+            end do
 
-            if (options%fcRegmappingGA(i) /= 0) then
-                nflbl = count(fcReg == options%fcRegmappingGA(i))
-                allocate(fcs(nflbl))
-                fcs = pack(indFc,fcReg == options%fcRegmappingGA(i))
+            ! Self-check if faces with fcReg label can be chained together
+            do i = 1, size(options%fcRegmappingGA)
 
-                if (size(fcs) /= 0) then
+                if (options%fcRegmappingGA(i) /= 0) then
+                    nflbl = count(fcReg == options%fcRegmappingGA(i))
+                    allocate(fcs(nflbl))
+                    fcs = pack(indFc,fcReg == options%fcRegmappingGA(i))
 
-                    ! Build chaines of faces
-                    call grid%face%ChainFaces(fcs, f_ord, nf)
-                    
-                    ! One fcReg number should only have one chain
-                    if (size(nf) > 1) then
+                    if (size(fcs) /= 0) then
 
-                        call gdErrorHandler("PostprocessGA: more than one chain of faces detect with the fcReg value")
+                        ! Build chaines of faces
+                        call grid%face%ChainFaces(fcs, f_ord, nf)
+
+                        ! One fcReg number should only have one chain
+                        if (size(nf) > 1) then
+
+                            call gdErrorHandler("PostprocessGA: more than one chain of faces detect with the fcReg value")
+
+                        end if
 
                     end if
 
+                    ! House keeping
+                    deallocate(fcs)
+
+
                 end if
+            end do
 
-                ! House keeping
-                deallocate(fcs)
-
-
-            end if
-        end do
+        end if
 
         ! Save
         call grid%face%reg%SetAllElementsArray(fcReg)

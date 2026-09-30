@@ -208,6 +208,9 @@ module goatmod_userinput
         !                       conversion; an empty list allows all labels
         ! - stacked_to_cutcell_min_cells: minimum number of triangles in an
         !                       eligible stack
+        ! - preserve_face_regions: preserve face-region values maintained by GA
+        !                       rather than rebuilding them from the legacy
+        !                       target mapping
         ! - split_shaved_off_tube: apply radial splitting a concavely shaved
         !                           off fluxtube at the outer boundary
         ! - splitting: apply splitting of cells
@@ -365,6 +368,7 @@ module goatmod_userinput
         logical                     :: stacked_to_cutcell_nonuniform
         integer(I8), allocatable    :: stacked_to_cutcell_labels(:)
         integer(I8)                 :: stacked_to_cutcell_min_cells
+        logical                     :: preserve_face_regions
 
         logical                     :: split_shaved_off_tube
 
@@ -1159,6 +1163,7 @@ module goatmod_userinput
         options%stacked_to_cutcell_nonuniform          = .true.
         options%stacked_to_cutcell_labels           = [integer(I8) ::]
         options%stacked_to_cutcell_min_cells        = 2
+        options%preserve_face_regions               = .false.
 
         options%split_shaved_off_tube               = .false.
 
@@ -1885,6 +1890,8 @@ module goatmod_userinput
         call ExtractOptionValueInteger1D(fid, field, options%stacked_to_cutcell_labels)
         field = 'ga.stacked_to_cutcell_min_cells'
         call ExtractOptionValueInteger0D(fid, field, options%stacked_to_cutcell_min_cells)
+        field = 'ga.preserve_face_regions'
+        call ExtractOptionValueLogical0D(fid, field, options%preserve_face_regions)
                
         ! Splitting and merging
         field = 'ga.splitting'
