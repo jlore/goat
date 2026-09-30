@@ -896,6 +896,12 @@ module goatmod_userinput
         !                           that complies to the marking criterion
         ! - evtmaxvessellength:     maximum L2-based vessel segment 
         !                           length before tube is extended
+        ! - evtmintransitionwidth:  minimum normal width of the first or
+        !                           last triangle at a topological-mesh
+        !                           tangency point. Nearby vertices are
+        !                           removed globally from shared GGTM
+        !                           lines until this width is met; zero
+        !                           disables this treatment
         ! - evtnoBL                 if true, don't apply any boundary 
         !                           layer at extended tubes (typically 
         !                           not desired. Only has effect if 
@@ -1028,7 +1034,8 @@ module goatmod_userinput
             remfacesminlength, refLBLmininf, refLBLmaxinf, refLBLminxp, &
             refLBLmaxxp, refLBdecaylengthxp, orthtracerstep, &
             radrefLBLmininf, radrefLBLmaxinf, radrefLBLminsp, &
-            radrefLBLmaxsp, radrefLBdecaylengthsp, evtmaxvessellength
+            radrefLBLmaxsp, radrefLBdecaylengthsp, evtmaxvessellength, &
+            evtmintransitionwidth
         real(R8), allocatable, dimension(:)     :: vdpdx, vdpdy, vdpdd, &
             vdpdval, refLBLminstructure, refLBLminvert, refLBLmaxstructure, &
             refLBLmaxvert, refLBdecaylengthstructure, refLBdecaylengthvert, &
@@ -1606,6 +1613,7 @@ module goatmod_userinput
         options%extendtptubes       = .true. 
         options%extendvesseltubes   = .false. 
         options%evtmaxvessellength  = 0.2
+        options%evtmintransitionwidth = 0.0_R8
         options%evtnoBL             = .true.
 
         ! Options for flux surface removal 
@@ -2824,6 +2832,8 @@ module goatmod_userinput
         call ExtractOptionValueLogical0D(fid, field, options%extendvesseltubes)
         field = 'gg.adap.evt.maxvessellength'
         call ExtractOptionValueReal0D(fid, field, options%evtmaxvessellength)
+        field = 'gg.adap.evt.mintransitionwidth'
+        call ExtractOptionValueReal0D(fid, field, options%evtmintransitionwidth)
         field = 'gg.adap.evt.noBL'
         call ExtractOptionValuelogical0D(fid, field, options%evtnoBL)
 

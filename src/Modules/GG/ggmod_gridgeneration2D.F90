@@ -1103,7 +1103,7 @@ module ggmod_gridgeneration2D
 
         ! Post-process the distribution
         call PostProcessVertexDistribution(ggtmdata, topomesh, grid, &
-            streamlinetracer)
+            streamlinetracer, options%evtmintransitionwidth)
 
         ! Write data
         call WriteGGTMData(ggtmdata, 'ggtmdata_after_vertexdistribution')
@@ -2061,7 +2061,7 @@ module ggmod_gridgeneration2D
 
     ! Vertex distribution post-processing
     subroutine PostProcessVertexDistribution(ggtmdata, topomesh, grid, &
-        streamlinetracer)
+        streamlinetracer, mintransitionwidth)
 
         ! Description
         !============
@@ -2092,6 +2092,9 @@ module ggmod_gridgeneration2D
         ! - line-of-sight data:     data on LOS is added for vertices 
         !                           to facilitate cell construction in 
         !                           ConstructCellsQuadTria
+        ! - tangency transitions:   near-apex non-node vertices are
+        !                           removed globally from shared segments
+        !                           when a minimum width is requested
 
         ! Declare variables
         !==================
@@ -2100,6 +2103,7 @@ module ggmod_gridgeneration2D
         class(TopomeshUDT), intent(in)              :: topomesh
         type(GGGridUDT), intent(inout)              :: grid
         class(StreamlineTracerUDT), intent(in)      :: streamlinetracer
+        real(R8), intent(in)                        :: mintransitionwidth
         
         ! Auxiliary
         integer(I8)                             :: nft, nct, t1, t2
@@ -2895,6 +2899,12 @@ module ggmod_gridgeneration2D
                 call celldata(i)%lines(j)%UpdateLineData(ggtmdata)
             end do 
         end do 
+
+        ! Coarsen typed tangency transitions in the shared segment data.
+        ! The logical removal mask is applied globally below, so every
+        ! cell using an affected line receives the same face subdivision.
+        call MarkTangencyTransitionVertices(ggtmdata, topomesh, &
+            mintransitionwidth, isvertexdeleted)
 
         ! Update ggtm data
         call UpdateGGTMDataAfterVertexRemoval(ggtmdata, isvertexdeleted)
@@ -3695,6 +3705,368 @@ module ggmod_gridgeneration2D
         ! Housekeeping
         !=============
         end associate
+
+    end subroutine
+
+    ! Shared tangency-transition coarsening
+    subroutine MarkTangencyTransitionVertices(ggtmdata, topomesh, &
+        mintransitionwidth, isvertexdeleted)
+
+        ! Mark near-apex vertices for global removal before cell
+        ! construction. Lines shared by multiple topological cells are
+        ! assembled from the same GGTM segments; applying one global mask
+        ! therefore preserves identical face subdivisions on both sides of
+        ! every interface. Removing vertices only in one constructed cell
+        ! would create nonconformal long edges and must not be done.
+
+        class(GGTMDataUDT), intent(in)          :: ggtmdata
+        class(TopomeshUDT), intent(in)          :: topomesh
+        real(R8), intent(in)                    :: mintransitionwidth
+        logical, intent(inout)                  :: isvertexdeleted(:)
+
+        integer(I8)                             :: i, j, nremoved, &
+            nprotecteddeleted
+        logical                                 :: alltransitionsvalid
+        logical, allocatable                    :: isprotectedvertex(:)
+
+        if (mintransitionwidth < 0.0_R8) then
+            call gdErrorHandler('MarkTangencyTransitionVertices: minimum ' // &
+                'transition width should be greater than or equal to zero')
+        end if
+        if (mintransitionwidth == 0.0_R8) return
+
+        if (topomesh%vert%ntot > size(isvertexdeleted)) then
+            call gdErrorHandler('MarkTangencyTransitionVertices: topological ' // &
+                'vertex count exceeds removal-mask bounds')
+        end if
+
+        ! A vertex may be a segment node in a different representation of
+        ! the same shared line. Protect nodes collected from every active
+        ! line, rather than relying only on the current tube's node flags.
+        allocate(isprotectedvertex(size(isvertexdeleted)))
+        isprotectedvertex = .false.
+        if (topomesh%vert%ntot > 0) then
+            isprotectedvertex(1:topomesh%vert%ntot) = .true.
+        end if
+        do i = 1, size(ggtmdata%cell)
+            do j = 1, size(ggtmdata%cell(i)%lines)
+                call MarkTangencyProtectedVertices(&
+                    ggtmdata%cell(i)%lines(j), isprotectedvertex)
+            end do
+            do j = 1, size(ggtmdata%cell(i)%tubes)
+                call MarkTangencyProtectedVertices(&
+                    ggtmdata%cell(i)%tubes(j)%hfline, isprotectedvertex)
+                call MarkTangencyProtectedVertices(&
+                    ggtmdata%cell(i)%tubes(j)%lfline, isprotectedvertex)
+            end do
+        end do
+        do i = 1, size(ggtmdata%face)
+            call MarkTangencyProtectedVertices(ggtmdata%face(i)%line, &
+                isprotectedvertex)
+        end do
+        nprotecteddeleted = count(isvertexdeleted .and. isprotectedvertex)
+
+        ! Shared lines can be visited in more than one topological cell. A
+        ! later visit may remove a candidate retained by an earlier visit,
+        ! so repeat until the global removal mask no longer changes.
+        do
+            nremoved = count(isvertexdeleted)
+            alltransitionsvalid = .true.
+            do i = 1, size(ggtmdata%cell)
+                do j = 1, size(ggtmdata%cell(i)%tubes)
+                    associate(&
+                        l1 => ggtmdata%cell(i)%tubes(j)%hfline, &
+                        l2 => ggtmdata%cell(i)%tubes(j)%lfline)
+
+                    call MarkTangencyTransitionEnd(l1, l2, .true., &
+                        topomesh, mintransitionwidth, isvertexdeleted, &
+                        isprotectedvertex, alltransitionsvalid)
+                    call MarkTangencyTransitionEnd(l1, l2, .false., &
+                        topomesh, mintransitionwidth, isvertexdeleted, &
+                        isprotectedvertex, alltransitionsvalid)
+
+                    end associate
+                end do
+            end do
+            if (count(isvertexdeleted) == nremoved) exit
+        end do
+
+        if (.not. alltransitionsvalid) then
+            call gdErrorHandler('MarkTangencyTransitionVertices: requested ' // &
+                'transition width cannot be reached without crossing a ' // &
+                'protected line-segment node')
+        end if
+        if (count(isvertexdeleted .and. isprotectedvertex) /= &
+            nprotecteddeleted) then
+            call gdErrorHandler('MarkTangencyTransitionVertices: attempted ' // &
+                'to remove a protected vertex')
+        end if
+
+    end subroutine
+
+    ! Collect protected nodes from one active GGTM line.
+    subroutine MarkTangencyProtectedVertices(line, isprotectedvertex)
+
+        type(GGTMFieldlineDataUDT), intent(in)  :: line
+        logical, intent(inout)                  :: isprotectedvertex(:)
+
+        integer(I8)                             :: k
+
+        if (.not. allocated(line%vert) .or. &
+            .not. allocated(line%isnodevert)) then
+            call gdErrorHandler('MarkTangencyProtectedVertices: line ' // &
+                'vertex data are not allocated')
+        end if
+        if (size(line%vert) /= size(line%isnodevert)) then
+            call gdErrorHandler('MarkTangencyProtectedVertices: inconsistent ' // &
+                'line vertex and node-mask sizes')
+        end if
+        if (any(line%vert < 1_I8) .or. &
+            any(line%vert > size(isprotectedvertex))) then
+            call gdErrorHandler('MarkTangencyProtectedVertices: line vertex ' // &
+                'ID outside protection-mask bounds')
+        end if
+
+        do k = 1, size(line%vert)
+            if (line%isnodevert(k)) then
+                isprotectedvertex(line%vert(k)) = .true.
+            end if
+        end do
+
+    end subroutine
+
+    ! Coarsen one end of a typed tangency transition.
+    subroutine MarkTangencyTransitionEnd(l1, l2, start, topomesh, &
+        mintransitionwidth, isvertexdeleted, isprotectedvertex, &
+        alltransitionsvalid)
+
+        type(GGTMFieldlineDataUDT), intent(in)  :: l1, l2
+        logical, intent(in)                     :: start
+        class(TopomeshUDT), intent(in)          :: topomesh
+        real(R8), intent(in)                    :: mintransitionwidth
+        logical, intent(inout)                  :: isvertexdeleted(:)
+        logical, intent(in)                     :: isprotectedvertex(:)
+        logical, intent(inout)                  :: alltransitionsvalid
+
+        integer(I8)                             :: n1, n2, v0, k1, k2
+        logical                                 :: found
+
+        n1 = size(l1%vert)
+        n2 = size(l2%vert)
+        if (n1 < 2 .or. n2 < 2) return
+
+        if (start) then
+            if (l1%vert(1) /= l2%vert(1)) return
+            v0 = l1%vert(1)
+        else
+            if (l1%vert(n1) /= l2%vert(n2)) return
+            v0 = l1%vert(n1)
+        end if
+        if (v0 > topomesh%vert%ntot) return
+        if (.not. any(topomesh%vert%type(v0) == &
+            [TMvertextp1ID, TMvertextp2ID])) return
+
+        call FindTangencyTransitionVertices(l1, l2, start, &
+            mintransitionwidth, isvertexdeleted, isprotectedvertex, &
+            k1, k2, found)
+        if (.not. found) then
+            alltransitionsvalid = .false.
+            return
+        end if
+
+        if (start) then
+            if (k1 > 2) then
+                if (any(isprotectedvertex(l1%vert(2:k1-1)))) then
+                    call gdErrorHandler('MarkTangencyTransitionEnd: attempted ' // &
+                        'to remove a protected vertex')
+                end if
+                isvertexdeleted(l1%vert(2:k1-1)) = .true.
+            end if
+            if (k2 > 2) then
+                if (any(isprotectedvertex(l2%vert(2:k2-1)))) then
+                    call gdErrorHandler('MarkTangencyTransitionEnd: attempted ' // &
+                        'to remove a protected vertex')
+                end if
+                isvertexdeleted(l2%vert(2:k2-1)) = .true.
+            end if
+        else
+            if (k1 < n1 - 1) then
+                if (any(isprotectedvertex(l1%vert(k1+1:n1-1)))) then
+                    call gdErrorHandler('MarkTangencyTransitionEnd: attempted ' // &
+                        'to remove a protected vertex')
+                end if
+                isvertexdeleted(l1%vert(k1+1:n1-1)) = .true.
+            end if
+            if (k2 < n2 - 1) then
+                if (any(isprotectedvertex(l2%vert(k2+1:n2-1)))) then
+                    call gdErrorHandler('MarkTangencyTransitionEnd: attempted ' // &
+                        'to remove a protected vertex')
+                end if
+                isvertexdeleted(l2%vert(k2+1:n2-1)) = .true.
+            end if
+        end if
+
+    end subroutine
+
+    ! Tangency-transition vertex selector
+    subroutine FindTangencyTransitionVertices(l1, l2, start, &
+        mintransitionwidth, isvertexdeleted, isprotectedvertex, k1, k2, found)
+
+        ! Select the first pair of line vertices for which the triangle
+        ! formed with a shared tangency apex has sufficient normal altitude.
+        ! The search advances the line whose candidate is closest to the apex,
+        ! which keeps the two candidates at similar poloidal distances. It
+        ! never advances past the next segment node, so a merged triangle does
+        ! not cross a line-segment or boundary-label transition.
+
+        type(GGTMFieldlineDataUDT), intent(in)  :: l1, l2
+        logical, intent(in)                     :: start
+        real(R8), intent(in)                    :: mintransitionwidth
+        logical, intent(in)                     :: isvertexdeleted(:), &
+            isprotectedvertex(:)
+        integer(I8), intent(out)                :: k1, k2
+        logical, intent(out)                    :: found
+
+        integer(I8)                             :: n1, n2, limit1, limit2, &
+            nodeind, nextk1, nextk2
+        real(R8)                                :: x0, y0, dx1, dy1, dx2, &
+            dy2, length1, length2, maxlength, transitionwidth
+        logical                                 :: canadvance1, canadvance2
+
+        found = .false.
+        k1 = 0
+        k2 = 0
+        n1 = size(l1%vert)
+        n2 = size(l2%vert)
+
+        if (.not. allocated(l1%xv) .or. .not. allocated(l1%yv) .or. &
+            .not. allocated(l2%xv) .or. .not. allocated(l2%yv)) then
+            call gdErrorHandler('FindTangencyTransitionVertices: line ' // &
+                'coordinates are not allocated')
+        end if
+        if (size(l1%xv) /= n1 .or. size(l1%yv) /= n1 .or. &
+            size(l2%xv) /= n2 .or. size(l2%yv) /= n2) then
+            call gdErrorHandler('FindTangencyTransitionVertices: inconsistent ' // &
+                'line coordinate and vertex-array sizes')
+        end if
+        if (n1 < 2 .or. n2 < 2) return
+
+        if (start) then
+            x0 = l1%xv(1)
+            y0 = l1%yv(1)
+            k1 = 2
+            k2 = 2
+
+            limit1 = n1
+            nodeind = findloc(isprotectedvertex(l1%vert(2:n1)), .true., 1)
+            if (nodeind > 0) limit1 = nodeind + 1
+            limit2 = n2
+            nodeind = findloc(isprotectedvertex(l2%vert(2:n2)), .true., 1)
+            if (nodeind > 0) limit2 = nodeind + 1
+
+            do while (k1 <= limit1)
+                if (.not. isvertexdeleted(l1%vert(k1))) exit
+                k1 = k1 + 1
+            end do
+            do while (k2 <= limit2)
+                if (.not. isvertexdeleted(l2%vert(k2))) exit
+                k2 = k2 + 1
+            end do
+            if (k1 > limit1 .or. k2 > limit2) return
+        else
+            x0 = l1%xv(n1)
+            y0 = l1%yv(n1)
+            k1 = n1 - 1
+            k2 = n2 - 1
+
+            limit1 = findloc(isprotectedvertex(l1%vert(1:n1-1)), &
+                .true., 1, back=.true.)
+            limit2 = findloc(isprotectedvertex(l2%vert(1:n2-1)), &
+                .true., 1, back=.true.)
+            if (limit1 == 0) limit1 = 1
+            if (limit2 == 0) limit2 = 1
+
+            do while (k1 >= limit1)
+                if (.not. isvertexdeleted(l1%vert(k1))) exit
+                k1 = k1 - 1
+            end do
+            do while (k2 >= limit2)
+                if (.not. isvertexdeleted(l2%vert(k2))) exit
+                k2 = k2 - 1
+            end do
+            if (k1 < limit1 .or. k2 < limit2) return
+        end if
+
+        do
+            dx1 = l1%xv(k1) - x0
+            dy1 = l1%yv(k1) - y0
+            dx2 = l2%xv(k2) - x0
+            dy2 = l2%yv(k2) - y0
+            length1 = sqrt(dx1**2 + dy1**2)
+            length2 = sqrt(dx2**2 + dy2**2)
+            maxlength = max(length1, length2)
+            transitionwidth = abs(dx1*dy2 - dy1*dx2) / &
+                max(maxlength, epsilon(1.0_R8))
+
+            if (transitionwidth >= mintransitionwidth) then
+                found = .true.
+                exit
+            end if
+
+            if (start) then
+                nextk1 = k1 + 1
+                do while (nextk1 <= limit1)
+                    if (.not. isvertexdeleted(l1%vert(nextk1))) exit
+                    nextk1 = nextk1 + 1
+                end do
+                nextk2 = k2 + 1
+                do while (nextk2 <= limit2)
+                    if (.not. isvertexdeleted(l2%vert(nextk2))) exit
+                    nextk2 = nextk2 + 1
+                end do
+                canadvance1 = nextk1 <= limit1
+                canadvance2 = nextk2 <= limit2
+                if (canadvance1 .and. canadvance2) then
+                    if (length1 <= length2) then
+                        k1 = nextk1
+                    else
+                        k2 = nextk2
+                    end if
+                elseif (canadvance1) then
+                    k1 = nextk1
+                elseif (canadvance2) then
+                    k2 = nextk2
+                else
+                    exit
+                end if
+            else
+                nextk1 = k1 - 1
+                do while (nextk1 >= limit1)
+                    if (.not. isvertexdeleted(l1%vert(nextk1))) exit
+                    nextk1 = nextk1 - 1
+                end do
+                nextk2 = k2 - 1
+                do while (nextk2 >= limit2)
+                    if (.not. isvertexdeleted(l2%vert(nextk2))) exit
+                    nextk2 = nextk2 - 1
+                end do
+                canadvance1 = nextk1 >= limit1
+                canadvance2 = nextk2 >= limit2
+                if (canadvance1 .and. canadvance2) then
+                    if (length1 <= length2) then
+                        k1 = nextk1
+                    else
+                        k2 = nextk2
+                    end if
+                elseif (canadvance1) then
+                    k1 = nextk1
+                elseif (canadvance2) then
+                    k2 = nextk2
+                else
+                    exit
+                end if
+            end if
+        end do
 
     end subroutine
 
